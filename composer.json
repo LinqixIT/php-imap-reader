@@ -1,0 +1,58 @@
+{
+    "name": "linqixit/php-imap-reader",
+    "description": "PHP IMAP reader for PHP 8.1–8.5; a maintained fork of benhall14/php-imap-reader.",
+    "homepage": "https://github.com/LinqixIT/php-imap-reader",
+    "keywords": [
+        "imap",
+        "mail",
+        "php",
+        "pop3",
+        "mailbox",
+        "email"
+    ],
+    "license": "MIT",
+    "type": "library",
+    "authors": [
+        {
+            "name": "pascal-lpholding",
+            "homepage": "https://github.com/pascal-lpholding",
+            "role": "Maintainer"
+        },
+        {
+            "name": "LinqixIT",
+            "homepage": "https://github.com/LinqixIT",
+            "role": "Maintaining organization"
+        },
+        {
+            "name": "Benjamin Hall",
+            "email": "ben@conobe.co.uk",
+            "homepage": "https://conobe.co.uk",
+            "role": "Original author"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "ext-imap": "*",
+        "ext-iconv": "*"
+    },
+    "suggest": {
+        "ext-mbstring": "Enables additional character-set conversion support."
+    },
+    "conflict": {
+        "benhall14/php-imap-reader": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "linqixit\\": "src/"
+        },
+        "files": [
+            "src/phpImapReader/EmailAttachment.php",
+            "src/phpImapReader/Email.php",
+            "src/phpImapReader/Reader.php"
+        ]
+    },
+    "support": {
+        "issues": "https://github.com/LinqixIT/php-imap-reader/issues",
+        "source": "https://github.com/LinqixIT/php-imap-reader"
+    }
+}
