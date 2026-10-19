@@ -11,12 +11,20 @@ single codebase for **PHP 8.1 through 8.5**.
 
 This independently maintained fork is based on
 [php-imap-reader by Benjamin Hall (benhall14)](https://github.com/benhall14/php-imap-reader).
-The changes for PHP 8.1–8.5 are documented in [CHANGELOG.md](CHANGELOG.md).
+Changes and new features are documented in [CHANGELOG.md](CHANGELOG.md).
 The original copyright notices and MIT license are retained.
 
 The Composer package is `linqixit/php-imap-reader`. Its PHP namespace is
 `linqixit\phpImapReader`. Compatibility aliases also support the original
 `benhall14\phpImapReader` class names.
+
+## Features
+
+- Fluent mailbox searches, including OR groups and custom header filters.
+- UID lists, message overviews and attachment metadata without downloading bodies.
+- Message-by-message processing with a generator.
+- Message IDs, reply references and access to repeated headers.
+- International attachment filenames and explicit saving with collision handling.
 
 ## Requirements
 
@@ -31,10 +39,6 @@ available both to your application and to the PHP runtime used by Composer.
 
 Official guidance: [Installing PHP IMAP](https://www.php.net/manual/en/imap.installation.php)
 and [PECL IMAP](https://pecl.php.net/package/imap).
-
-This version was tested with PHP 8.1.34 and PHP 8.5.0. The Composer requirement
-allows later PHP 8.x versions; those need further verification and a compatible
-IMAP extension.
 
 ## Installation
 
@@ -159,6 +163,88 @@ the first message or `null`.
 Date filters accept values that `strtotime()` can parse, such as `2026-10-19`.
 Invalid values cause an `InvalidArgumentException`.
 
+### OR searches and custom headers
+
+Use `anyOf()` when either condition should match:
+
+```php
+$emails = $reader
+    ->clearFilters()
+    ->anyOf(['UNSEEN', 'FLAGGED'])
+    ->limit(20)
+    ->page(1)
+    ->get();
+```
+
+Each condition in `anyOf()` is a native IMAP2 search string, for example
+`UNSEEN` or `FROM "support@example.com" UNANSWERED`. Existing chained filters
+still apply to every branch. Results are combined without duplicates before
+sorting and pagination. Calling `anyOf()` again replaces the previous OR group.
+Unsupported operators or malformed alternatives cause an
+`InvalidArgumentException`; use `searchHeader()` for header conditions.
+
+Filter by a header such as `References`, `Message-ID` or an application-specific
+field:
+
+```php
+$emails = $reader
+    ->clearFilters()
+    ->from('support@example.com')
+    ->searchHeader('References', '<original@example.com>')
+    ->get();
+```
+
+Header names are case-insensitive. Header values use a case-insensitive
+substring match; an empty search value checks whether the header exists.
+Several header filters must all match. Folded and repeated headers are
+supported.
+
+Header filtering reads the headers of candidate messages first and downloads
+full messages only for matches. Apply sender, date or status filters first
+when searching a large mailbox.
+
+`clearFilters()` starts a new query while keeping the connection and pagination
+settings. `id($uid)` selects a specific message and takes precedence over query
+filters and pagination.
+
+### UID lists and message overviews
+
+| Method | Result |
+| --- | --- |
+| `searchUIDs()` | Matching UIDs in the selected order and page |
+| `searchUIDs(false)` | All matching UIDs, without pagination |
+| `countMatching()` | Number of matches before pagination |
+| `getOverview()` | Message summaries for the selected order and page |
+
+These methods leave the loaded `emails()` collection available. Overviews
+include native IMAP fields such as `uid`, `msgno`, `subject`, `from`, `to`,
+`date`, `size`, `seen`, `flagged` and `answered`; some fields may be absent.
+Subject and address display text are decoded. These calls do not download
+message bodies or attachment contents, and do not mark messages as read.
+
+```php
+foreach ($reader->clearFilters()->unseen()->limit(20)->page(1)->getOverview() as $message) {
+    echo $message->uid . ': ' . ($message->subject ?? '') . PHP_EOL;
+}
+```
+
+### Processing a large mailbox
+
+```php
+foreach ($reader->clearFilters()->unseen()->limit(0)->page(1)->iterate() as $uid => $email) {
+    echo $uid . ': ' . $email->subject() . PHP_EOL;
+    // Process this message here.
+}
+```
+
+`iterate()` yields one `Email` at a time, keyed by UID, and does not build an
+`emails()` result collection. It uses the configured filters, order, pagination
+and automatic read marking. The UID list is captured before processing, so
+marking or moving a processed message does not shift the remaining selection.
+The UID list and the current message still require memory; a single message
+can contain large attachments. Keep the same account and mailbox throughout
+the iteration.
+
 ## Message fields and attachments
 
 | Data | Methods on an `Email` object |
@@ -166,10 +252,29 @@ Invalid values cause an `InvalidArgumentException`.
 | Identification | `id()` (UID), `msgno()`, `size()` |
 | Content | `subject()`, `date($format)`, `plain()`, `html()` |
 | Addresses | `fromName()`, `fromEmail()`, `to()`, `cc()`, `replyTo()`, `isTo($address)` |
-| Headers | `headers()`, `getHeader($name)` |
+| Headers | `headers()`, `getHeader($name)`, `getHeaderValues($name)` |
+| Reply references | `messageId()`, `inReplyTo()`, `references()` |
 | Status | `isRecent()`, `isUnseen()`, `isFlagged()`, `isAnswered()`, `isDeleted()`, `isDraft()` |
 | Attachments | `hasAttachments()`, `attachments()`, `attachment($id)` |
 | Raw message | `eml()`, `saveEml($filename)` |
+
+`getHeader()` looks up names without regard to case and returns the latest
+value or `null`. `getHeaderValues()` returns every value of a repeated field
+in arrival order. Folded values and colons inside values are preserved.
+
+`messageId()` and `inReplyTo()` return the first message ID, including angle
+brackets, or `null`. `references()` returns an ordered list of unique message
+IDs. These header IDs identify messages across mailboxes; `id()` remains the
+mailbox UID.
+
+```php
+echo $email->messageId() ?? '';
+echo $email->inReplyTo() ?? '';
+
+foreach ($email->references() as $messageId) {
+    echo $messageId . PHP_EOL;
+}
+```
 
 ```php
 foreach ($email->attachments() as $attachment) {
@@ -182,6 +287,45 @@ foreach ($email->attachments() as $attachment) {
     $path = $attachment->filePath();
 }
 ```
+
+### Attachment names, metadata and saving
+
+| Method on `EmailAttachment` | Result |
+| --- | --- |
+| `originalName()` | Decoded sender filename, or a generated name if absent |
+| `name()` | Existing attachment name, including its ID prefix |
+| `mime()` | Declared MIME type |
+| `extension()` | Lowercase filename extension |
+| `size()` | Decoded content size or saved file size, in bytes |
+| `save($directory, $filename = null, $overwrite = false)` | Absolute path of the saved file |
+
+RFC 2231 extended filenames and numbered filename continuations are supported,
+including non-ASCII names. `save()` uses the original filename by default and
+removes path components. If that filename already exists, a suffix such as
+` (1)` is added. Set `$overwrite` to `true` only when replacing an existing file
+is intended. The destination directory must already exist and be writable.
+The returned path and `filePath()` identify the actual saved file, including
+any filename changes. `name()` and `content()` are retained. Automatic saving
+through the constructor's attachment directory also handles filename collisions.
+Names that exceed common filesystem limits are shortened for saving;
+`originalName()` retains the full display name. Invalid filenames or directories
+cause an `InvalidArgumentException`. Unreadable attachment content or failed
+writes cause a `RuntimeException`; `size()` also throws if no readable content
+is available.
+
+```php
+foreach ($email->attachments() as $attachment) {
+    $path = $attachment->save(__DIR__ . '/downloads');
+    echo $attachment->originalName() . ' -> ' . $path . PHP_EOL;
+}
+```
+
+To inspect attachments before downloading a message, use
+`$reader->getAttachmentInfo($uid)`. Each entry contains `part`, `name`, `mime`,
+`disposition`, `content_id` and `bytes`. This reads the MIME structure without
+fetching attachment contents. `bytes` is the size reported for the encoded
+MIME part and can differ from the decoded file size, or be `null` if unavailable.
+Attachments without a sender filename receive a name based on their MIME part.
 
 ## Managing mailboxes and connections
 

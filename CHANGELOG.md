@@ -1,83 +1,71 @@
 # Changelog
 
-Changes in this fork by [pascal-lpholding](https://github.com/pascal-lpholding)
-under [LinqixIT](https://github.com/LinqixIT), based on
-[php-imap-reader by Benjamin Hall (benhall14)](https://github.com/benhall14/php-imap-reader).
+Maintained by [pascal-lpholding](https://github.com/pascal-lpholding) under
+[LinqixIT](https://github.com/LinqixIT), based on
+[benhall14/php-imap-reader](https://github.com/benhall14/php-imap-reader).
+
+## 2026-10-20 – Search, message metadata and attachments
+
+### Added
+
+- `searchHeader()` for filtering by custom headers before downloading complete
+  messages, with support for folded and repeated fields.
+- `anyOf()` for OR searches. Existing filters apply to each branch, and matching
+  UIDs are deduplicated before sorting and pagination.
+- `searchUIDs()`, `countMatching()` and `getOverview()` for working with message
+  lists without downloading bodies or attachments.
+- `iterate()` for processing messages one at a time from a stable UID selection.
+- `clearFilters()` to start a new query on the same connection.
+- `messageId()`, `inReplyTo()`, `references()` and `getHeaderValues()` for reply
+  tracking and repeated header fields.
+- `getAttachmentInfo()` to inspect attachment metadata without downloading its
+  contents.
+- `originalName()`, `mime()`, `extension()`, `size()` and `save()` on attachments.
+  Saving uses a filename suffix for collisions unless overwriting is requested.
+- RFC 2231 extended filenames and numbered continuations for attachment names.
+
+### Fixed
+
+- Header parsing now preserves folded values, repeated fields and embedded
+  colons. Header lookups are case-insensitive.
+- Attachment filenames are confined to the selected directory when saved.
+- Automatic attachment saving also adds a suffix on filename collisions instead
+  of silently reusing an existing file.
+- Recognize named text attachments and inline images with a Content-ID.
+  Attached messages are kept as one attachment instead of adding their enclosed
+  parts to the outer message.
 
 ## 2026-10-19 – PHP 8.1–8.5 compatibility
 
-### Project identity and attribution
+### Changed
 
-- GitHub project: [LinqixIT/php-imap-reader](https://github.com/LinqixIT/php-imap-reader).
-- Maintainer: `pascal-lpholding`; organization: `LinqixIT`.
-- Separate Composer package identity: `linqixit/php-imap-reader`.
-- Retained credit for the original author, Benjamin Hall, and the original project.
-- Preserved the MIT license and original copyright notices; added a copyright
-  notice for the modifications in this fork.
-- Adopted the dedicated PHP namespace `linqixit\phpImapReader` and updated the
-  autoload mapping.
-- Translated all project documentation into English.
+- Composer package: `linqixit/php-imap-reader`, maintained by
+  LinqixIT and pascal-lpholding.
+- Canonical namespace: `linqixit\phpImapReader`. Composer automatically loads
+  compatibility aliases for the original `benhall14\phpImapReader` classes.
+  Existing imports and type declarations remain supported.
+- The original package and this fork cannot be installed together because they
+  share the legacy class names. Class-name strings reported by PHP use the
+  canonical LinqixIT namespace.
+- Requires PHP `^8.1`, `ext-imap` and `ext-iconv`; `ext-mbstring` is optional.
+  IMAP needs a separate installation from PHP 8.4 onward.
+- Documentation is available in English. Benjamin Hall's original attribution
+  and MIT license are retained, with an additional notice for fork modifications.
 
-### Namespace and migration compatibility
+### Fixed
 
-- The canonical PHP namespace is `linqixit\phpImapReader`.
-- Added compatibility aliases for `Reader`, `Email` and `EmailAttachment` in
-  the original `benhall14\phpImapReader` namespace. Composer registers these
-  aliases automatically when `vendor/autoload.php` is loaded.
-- Existing `use` statements, fully qualified class references and type
-  declarations using the original names remain supported. New code can use
-  `linqixit\phpImapReader` directly.
-- Class names reported by `get_class()`, reflection and newly serialized
-  objects use the canonical namespace. Code that compares or stores class
-  names as exact strings may need adjustment.
-- When switching through Composer, change the package dependency from
-  `benhall14/php-imap-reader` to `linqixit/php-imap-reader`, update the
-  application's lock file and regenerate its autoloader.
-- Declared a Composer conflict with the original package because the
-  compatibility aliases share its class names.
-
-### Compatibility
-
-- One shared codebase for PHP 8.1 through PHP 8.5.
-- Set the Composer requirement to `php: ^8.1` and updated `composer.lock`.
-- Declared `ext-imap` and `ext-iconv` as requirements; `ext-mbstring` is optional.
-- Added guidance on installing IMAP separately starting with PHP 8.4.
-- Preserved class names, public method names, and parameter order.
-
-### Fixes
-
-- `isImapResource()` recognizes the `IMAP\Connection` objects used since PHP 8.1.
-- Reused active connections; `get()` no longer opens an additional, unused
-  connection.
-- `close()` clears the stored handle and can be called repeatedly. Connections
-  closed externally are handled explicitly.
-- Reconnecting and switching folders close the previous connection without an
-  additional expunge. Switching folders then uses the requested mailbox.
-- Checked `false` results when fetching mailbox lists, headers, structures, and
-  body parts before passing them to subsequent function calls.
-- Missing sender fields and `null` values in message bodies, dates, format strings,
-  and inline replacements no longer trigger the corresponding warnings or
-  deprecation notices.
-- Missing attachment IDs and header keys are explicitly treated as empty strings
-  to avoid the PHP 8.5 deprecation of `null` array keys.
-- Handled raw UTF-8 headers correctly. Unknown character sets no longer cause an
-  unhandled `ValueError`; the original data is preserved if conversion is not
-  possible.
-- Stopped using deprecated mbstring transfer encodings as character sets.
-- Preserved MIME 8BIT and BINARY content as raw data; decoded Base64 and
-  Quoted-Printable content. Binary attachments are no longer accidentally
-  Base64-encoded again.
-- Marking a message as read uses its actual UID instead of its sequence number.
-- `read()` returns the Reader and supports method chaining like `seen()`.
-- Corrected invalid method names in the usage examples.
-
-### Error handling and behavior
-
-- Invalid or empty date filters throw `InvalidArgumentException`.
-- Individual messages that cannot be fetched may return `null`; `get()` skips
-  these results and returns successfully read `Email` objects.
-- Missing raw body data is treated as an empty string if the rest of the message
-  can be read.
-- A clear exception is thrown if the IMAP extension is missing.
-- Preserved the existing expunge behavior of `close()`, `reset()`, and the destructor.
-
+- Recognize `IMAP\Connection` objects and reuse active connections.
+- Handle repeated closes and connections closed outside the Reader.
+- Reconnect and switch folders without an additional expunge. `close()`,
+  `reset()` and the destructor retain their existing expunge behavior.
+- Check failed mailbox, header, structure and body fetches before processing.
+  Unavailable individual messages return `null` and are skipped by `get()`.
+- Handle missing fields and `null` values without the related PHP warnings or
+  deprecation notices, including `null` array keys on PHP 8.5.
+- Decode raw UTF-8 headers and preserve data when a character-set conversion is
+  unavailable. Avoid deprecated mbstring transfer encodings.
+- Preserve MIME 8BIT and BINARY data and decode Base64 and Quoted-Printable
+  content correctly.
+- Mark messages as read by UID and return the Reader from `read()` for chaining.
+- Reject invalid or empty date filters with `InvalidArgumentException`.
+- Report a clear error when the IMAP extension is missing.

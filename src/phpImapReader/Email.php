@@ -56,6 +56,13 @@ class Email
     public $custom_headers = array();
 
     /**
+     * All values for each header, indexed by its lowercase field name.
+     *
+     * @var array
+     */
+    protected $header_values = array();
+
+    /**
      * The subject line of this email.
      * 
      * @var string
@@ -666,11 +673,53 @@ class Email
     }
 
     /**
-     * Adds a custom header to this email.
-     * 
-     * @param string $custom_header The custom header to append to the array.
-     * 
+     * Replace the headers with an RFC header block, unfolding continued lines.
+     * Parsing stops at the first empty line, before any message body.
+     *
+     * @param string $raw_headers The raw headers, with CRLF or LF line endings.
+     *
      * @return Email
+     */
+    public function setHeaders($raw_headers)
+    {
+        $this->custom_headers = array();
+        $this->header_values = array();
+        $current_header = null;
+
+        foreach (preg_split('/\r\n|\n/', (string) ($raw_headers ?? '')) as $line) {
+            if ($line === '') {
+                break;
+            }
+
+            if ($line[0] === ' ' || $line[0] === "\t") {
+                if ($current_header !== null) {
+                    // Unfold by removing the line break and keeping its whitespace.
+                    $current_header .= $line;
+                }
+                continue;
+            }
+
+            if ($current_header !== null) {
+                $this->addCustomHeader($current_header);
+            }
+
+            $current_header = $line;
+        }
+
+        if ($current_header !== null) {
+            $this->addCustomHeader($current_header);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Add one header, preserving repeated fields and colons in its value.
+     * The associative headers() view keeps the last value for each field.
+     *
+     * @param string $custom_header The header to add, optionally folded.
+     *
+     * @return Email|false
      */
     public function addCustomHeader($custom_header)
     {
@@ -678,11 +727,41 @@ class Email
             return false;
         }
 
-        $header_info = explode(":", $custom_header);
+        $custom_header = preg_replace('/\r?\n(?=[ \t])/', '', (string) $custom_header);
+        $custom_header = rtrim($custom_header, "\r\n");
 
-        if (is_array($header_info) && isset($header_info[0]) && isset($header_info[1])) {
-            $this->custom_headers[$header_info[0]] = (string) trim($header_info[1]);
+        // A single field must not contain another header or a message body.
+        if (strpbrk($custom_header, "\r\n") !== false) {
+            return $this;
         }
+
+        $header_info = explode(':', $custom_header, 2);
+        $name = trim($header_info[0]);
+
+        if (!isset($header_info[1]) || !preg_match('/^[\x21-\x39\x3b-\x7e]+$/D', $name)) {
+            return $this;
+        }
+
+        $value = trim($header_info[1]);
+        $key = strtolower($name);
+        $values = $this->getHeaderValues($name);
+        $values[] = $value;
+        $this->header_values[$key] = $values;
+
+        // Keep the first spelling of the field name for existing array callers.
+        $first_name = null;
+        foreach ((array) $this->custom_headers as $existing_name => $existing_value) {
+            if (strcasecmp((string) $existing_name, $name) === 0) {
+                if ($first_name === null) {
+                    $first_name = $existing_name;
+                } else {
+                    unset($this->custom_headers[$existing_name]);
+                }
+            }
+        }
+
+        $name = $first_name ?? $name;
+        $this->custom_headers[$name] = $value;
 
         return $this;
     }
@@ -700,17 +779,24 @@ class Email
     }
 
     /**
-     * Returns a specific header (if it exists), or returns null.
+     * Return the last value of a header, using a case-insensitive field name.
      *
      * @param string $header_name
      *
-     * @return string
+     * @return string|null
      */
     public function getCustomHeader($header_name)
     {
-        $header_name = $header_name ?? '';
+        $header_name = (string) ($header_name ?? '');
+        $value = null;
 
-        return isset($this->custom_headers) && isset($this->custom_headers[$header_name]) ? $this->custom_headers[$header_name] : null;
+        foreach ((array) $this->custom_headers as $name => $header_value) {
+            if (strcasecmp((string) $name, $header_name) === 0) {
+                $value = $header_value;
+            }
+        }
+
+        return $value;
     }
 
     /**
@@ -718,11 +804,101 @@ class Email
      *
      * @param string $header_name
      *
-     * @return string
+     * @return string|null
      */
     public function getHeader($header_name)
     {
         return $this->getCustomHeader($header_name);
+    }
+
+    /**
+     * Return all values of a header in their original order.
+     *
+     * @param string $header_name A case-insensitive field name.
+     *
+     * @return array
+     */
+    public function getHeaderValues($header_name)
+    {
+        $header_name = (string) ($header_name ?? '');
+        $current_values = array();
+
+        foreach ((array) $this->custom_headers as $name => $value) {
+            if (strcasecmp((string) $name, $header_name) === 0) {
+                $current_values[] = $value;
+            }
+        }
+
+        $key = strtolower($header_name);
+
+        if (count($current_values) === 1 && isset($this->header_values[$key])) {
+            $values = $this->header_values[$key];
+
+            if ($values[count($values) - 1] === $current_values[0]) {
+                return $values;
+            }
+        }
+
+        // Honor callers that assign values to the public custom_headers array.
+        return $current_values;
+    }
+
+    /**
+     * Return the first Message-ID, including angle brackets, or null.
+     * This is distinct from id(), which returns the mailbox UID.
+     *
+     * @return string|null
+     */
+    public function messageId()
+    {
+        $ids = $this->messageIdsFromHeader('Message-ID');
+
+        return isset($ids[0]) ? $ids[0] : null;
+    }
+
+    /**
+     * Return the first Message-ID in In-Reply-To, or null.
+     *
+     * @return string|null
+     */
+    public function inReplyTo()
+    {
+        $ids = $this->messageIdsFromHeader('In-Reply-To');
+
+        return isset($ids[0]) ? $ids[0] : null;
+    }
+
+    /**
+     * Return the References Message-IDs in order, without exact duplicates.
+     * Each ID includes its angle brackets.
+     *
+     * @return array
+     */
+    public function references()
+    {
+        return $this->messageIdsFromHeader('References');
+    }
+
+    /**
+     * Extract angle-bracketed Message-IDs from all occurrences of a header.
+     *
+     * @param string $header_name The field to read.
+     *
+     * @return array
+     */
+    protected function messageIdsFromHeader($header_name)
+    {
+        $ids = array();
+
+        foreach ($this->getHeaderValues($header_name) as $value) {
+            preg_match_all('/<[^<>\s]+@[^<>\s]+>/', (string) ($value ?? ''), $matches);
+
+            foreach ($matches[0] as $id) {
+                $ids[$id] = $id;
+            }
+        }
+
+        return array_values($ids);
     }
 
     /**

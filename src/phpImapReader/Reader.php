@@ -92,6 +92,27 @@ class Reader
     public $modes = array();
 
     /**
+     * Header filters applied to the native search results.
+     *
+     * @var array
+     */
+    protected $header_filters = array();
+
+    /**
+     * Alternative native search criteria, combined as one OR group.
+     *
+     * @var array
+     */
+    protected $any_of_criteria = array();
+
+    /**
+     * Track folder changes so an iterator cannot fetch UIDs from another folder.
+     *
+     * @var int
+     */
+    protected $mailbox_generation = 0;
+
+    /**
      * The id of an specific id.
      * 
      * @var int
@@ -668,6 +689,125 @@ class Reader
     }
 
     /**
+     * Match an unfolded header value using a case-insensitive substring.
+     * Repeated calls are combined with AND; an empty value checks for presence.
+     *
+     * @param string $name  The header field name.
+     * @param string $value The substring to find.
+     *
+     * @return Reader
+     */
+    public function searchHeader($name, $value)
+    {
+        if (!is_string($name)
+            || preg_match('/\A[\x21-\x39\x3b-\x7e]+\z/', $name) !== 1) {
+            throw new \InvalidArgumentException('Invalid email header field name.');
+        }
+
+        if (!is_string($value) || strpbrk($value, "\r\n\0") !== false) {
+            throw new \InvalidArgumentException('A header search value must be a string without CR, LF or NUL characters.');
+        }
+
+        $this->header_filters[] = array(strtolower($name), $value);
+
+        return $this;
+    }
+
+    /**
+     * Set one OR group of native IMAP search criteria.
+     * Existing filters are applied to every alternative; another call replaces
+     * the previous group. OR and HEADER operators are not supported by c-client.
+     *
+     * @param array $criteria Nonempty native IMAP2 search strings.
+     *
+     * @return Reader
+     */
+    public function anyOf(array $criteria)
+    {
+        if (!$criteria) {
+            throw new \InvalidArgumentException('At least one search alternative is required.');
+        }
+
+        $alternatives = array();
+        foreach ($criteria as $criterion) {
+            $alternatives[] = $this->validateSearchAlternative($criterion);
+        }
+
+        $this->any_of_criteria = $alternatives;
+
+        return $this;
+    }
+
+    /**
+     * Validate the IMAP2 search syntax accepted by the native extension.
+     *
+     * @param string $criterion
+     *
+     * @return string
+     */
+    protected function validateSearchAlternative($criterion)
+    {
+        if (!is_string($criterion)
+            || trim($criterion) === ''
+            || strpbrk($criterion, "\r\n\0") !== false) {
+            throw new \InvalidArgumentException('Each search alternative must be a nonempty string without CR, LF or NUL characters.');
+        }
+
+        $criterion = trim($criterion);
+        preg_match_all('/"(?:[^"\\\\]|\\\\.)*"|[^\s"]+/', $criterion, $matches, PREG_OFFSET_CAPTURE);
+
+        $tokens = array();
+        $end = 0;
+        foreach ($matches[0] as $match) {
+            $gap = substr($criterion, $end, $match[1] - $end);
+            if (trim($gap) !== '' || ($tokens && $gap === '')) {
+                throw new \InvalidArgumentException('Invalid quoted string in IMAP search alternative.');
+            }
+            $tokens[] = $match[0];
+            $end = $match[1] + strlen($match[0]);
+        }
+
+        if (!$tokens || trim(substr($criterion, $end)) !== '') {
+            throw new \InvalidArgumentException('Invalid quoted string in IMAP search alternative.');
+        }
+
+        $flags = array('ALL', 'ANSWERED', 'DELETED', 'FLAGGED', 'NEW', 'OLD', 'RECENT', 'SEEN', 'UNANSWERED', 'UNDELETED', 'UNFLAGGED', 'UNSEEN');
+        $with_value = array('BCC', 'BEFORE', 'BODY', 'CC', 'FROM', 'KEYWORD', 'ON', 'SINCE', 'SUBJECT', 'TEXT', 'TO', 'UNKEYWORD');
+
+        for ($index = 0; $index < count($tokens); $index++) {
+            $operator = strtoupper($tokens[$index]);
+            if (in_array($operator, $flags, true)) {
+                continue;
+            }
+            if (in_array($operator, $with_value, true) && isset($tokens[$index + 1])) {
+                $index++;
+                continue;
+            }
+
+            throw new \InvalidArgumentException(
+                'Unsupported IMAP search alternative. Use native IMAP2 criteria, anyOf() for OR, and searchHeader() for header fields.'
+            );
+        }
+
+        return $criterion;
+    }
+
+    /**
+     * Clear search filters while keeping connection settings and loaded emails.
+     *
+     * @return Reader
+     */
+    public function clearFilters()
+    {
+        $this->id = 0;
+        $this->modes = array();
+        $this->header_filters = array();
+        $this->any_of_criteria = array();
+
+        return $this;
+    }
+
+    /**
      * Add the recent flag to the mode selection. 
      * This allows for matching recent emails.
      * 
@@ -978,6 +1118,7 @@ class Reader
     {
         if ($this->mailbox !== $mailbox) {
             $this->closeConnection();
+            $this->mailbox_generation++;
         }
 
         $this->mailbox = $mailbox;
@@ -1000,6 +1141,190 @@ class Reader
     }
 
     /**
+     * Return matching message UIDs without downloading message bodies.
+     * Header filters fetch only headers. An explicit id() takes precedence over
+     * other filters and pagination, as it does in get().
+     *
+     * @param bool $applyPagination Whether to apply the current page and limit.
+     *
+     * @return int[]
+     */
+    public function searchUIDs($applyPagination = true)
+    {
+        if ($this->id) {
+            $uid = (int) $this->id;
+
+            return $uid > 0 && imap_msgno($this->stream(), $uid) > 0
+                ? array($uid) : array();
+        }
+
+        $stream = $this->stream();
+        $common = $this->modes ? implode(' ', $this->modes) : 'ALL';
+        $alternatives = $this->any_of_criteria ?: array('');
+        $selected = array();
+
+        foreach ($alternatives as $alternative) {
+            // c-client does not accept an OR search operator. Search each
+            // branch separately, then merge UIDs before filtering or paging.
+            $criteria = trim($common . ' ' . $alternative);
+            $matches = imap_search($stream, $criteria, SE_UID, $this->encoding);
+
+            foreach ($matches ?: array() as $uid) {
+                $uid = (int) $uid;
+                if ($uid > 0) {
+                    $selected[$uid] = $uid;
+                }
+            }
+        }
+
+        if ($this->header_filters) {
+            foreach ($selected as $uid) {
+                $headers = imap_fetchheader($stream, $uid, FT_UID);
+                if ($headers === false) {
+                    unset($selected[$uid]);
+                    continue;
+                }
+
+                $email = (new Email())->setHeaders($headers);
+                foreach ($this->header_filters as $filter) {
+                    $matched = false;
+                    foreach ($email->getHeaderValues($filter[0]) as $value) {
+                        if ($filter[1] === '' || stripos($value, $filter[1]) !== false) {
+                            $matched = true;
+                            break;
+                        }
+                    }
+                    if (!$matched) {
+                        unset($selected[$uid]);
+                        break;
+                    }
+                }
+            }
+        }
+
+        $uids = array_values($selected);
+        if ($this->order == 'DESC') {
+            rsort($uids, SORT_NUMERIC);
+        } else {
+            sort($uids, SORT_NUMERIC);
+        }
+
+        $limit = (int) $this->limit;
+        if ($applyPagination && $limit > 0) {
+            $offset = $this->page > 0
+                ? ((int) $this->page - 1) * $limit
+                : (int) $this->offset;
+            $uids = array_slice($uids, max(0, $offset), $limit);
+        }
+
+        return $uids;
+    }
+
+    /**
+     * Count matching messages before pagination without fetching their bodies.
+     *
+     * @return int
+     */
+    public function countMatching()
+    {
+        return count($this->searchUIDs(false));
+    }
+
+    /**
+     * Fetch native message summaries in the selected UID order.
+     * This does not fetch message bodies or mark messages as read.
+     *
+     * @return \stdClass[]
+     */
+    public function getOverview()
+    {
+        $uids = $this->searchUIDs();
+        if (!$uids) {
+            return array();
+        }
+
+        $stream = $this->stream();
+        $selected = array_fill_keys($uids, true);
+        $summaries = array();
+
+        foreach (array_chunk($uids, 100) as $chunk) {
+            $overview = imap_fetch_overview($stream, implode(',', $chunk), FT_UID);
+            foreach ($overview ?: array() as $item) {
+                if (!is_object($item) || !isset($item->uid)) {
+                    continue;
+                }
+
+                $uid = (int) $item->uid;
+                if (!isset($selected[$uid])) {
+                    continue;
+                }
+
+                $summary = (object) get_object_vars($item);
+                $summary->uid = $uid;
+                foreach (array('subject', 'from', 'to') as $field) {
+                    if (isset($summary->{$field})) {
+                        $summary->{$field} = $this->decodeMimeHeader($summary->{$field});
+                    }
+                }
+                $summaries[$uid] = $summary;
+            }
+        }
+
+        $result = array();
+        foreach ($uids as $uid) {
+            if (isset($summaries[$uid])) {
+                $result[] = $summaries[$uid];
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Yield one email at a time, keyed by UID, without filling emails().
+     * UIDs are selected once so marking or deleting messages cannot shift the
+     * remaining selection. Do not change this Reader's mailbox while iterating.
+     *
+     * @return \Generator<int, Email>
+     */
+    public function iterate()
+    {
+        $mailbox = array($this->hostname, $this->user_name, $this->mailbox, $this->mailbox_generation);
+        $uids = $this->searchUIDs();
+
+        foreach ($uids as $uid) {
+            $this->assertIteratorMailbox($mailbox);
+
+            $email = $this->getEmail($uid);
+            if ($email === null) {
+                continue;
+            }
+
+            if ($this->mark_as_read) {
+                $this->markAsRead($email->id());
+            }
+
+            yield $uid => $email;
+
+            $this->assertIteratorMailbox($mailbox);
+        }
+    }
+
+    /**
+     * Prevent a running iterator from applying selected UIDs to another mailbox.
+     *
+     * @param array $mailbox
+     *
+     * @return void
+     */
+    protected function assertIteratorMailbox(array $mailbox)
+    {
+        if ($mailbox !== array($this->hostname, $this->user_name, $this->mailbox, $this->mailbox_generation)) {
+            throw new \LogicException('The Reader mailbox must not change while iterating messages.');
+        }
+    }
+
+    /**
      * Fetch emails based on the previously set parameters.
      * 
      * @return array
@@ -1014,6 +1339,28 @@ class Reader
             $email = $this->getEmail($this->id);
             if ($email !== null) {
                 $this->emails[] = $email;
+            }
+
+            return $this->emails;
+        }
+
+        if ($this->header_filters || $this->any_of_criteria) {
+            $uids = $this->searchUIDs();
+            $this->emails = array();
+            $this->email_index = array();
+
+            foreach ($uids as $uid) {
+                $email = $this->getEmail($uid);
+                if ($email === null) {
+                    continue;
+                }
+
+                $this->emails[] = $email;
+                $this->email_index[] = $email->msgno();
+
+                if ($this->mark_as_read) {
+                    $this->markAsRead($email->id());
+                }
             }
 
             return $this->emails;
@@ -1248,22 +1595,215 @@ class Reader
         $email->setDraft($draft);
 
         $headers = imap_fetchheader($this->stream(), $email->msgno());
+        $email->setHeaders($headers);
 
-        if ($headers) {
+        return $email;
+    }
 
-            $headers_array = explode("\n", $headers);
+    /**
+     * List attachment metadata without downloading any message content.
+     * The bytes field is the encoded MIME part size reported by the server.
+     *
+     * @param int $uid The message UID in the selected mailbox.
+     * @return array[] Part, name, MIME type, disposition, Content-ID and bytes.
+     */
+    public function getAttachmentInfo($uid)
+    {
+        $uid = (int) $uid;
+        if ($uid <= 0) {
+            return array();
+        }
 
-            foreach ($headers_array as $header) {
-                /**
-                 * Remove the limit to x-headers only. This allows for all headers to be added.
-                 */
-                //if (strpos($header, "X-") !== false) {
-                $email->addHeader($header);
-                //}
+        $structure = imap_fetchstructure($this->stream(), $uid, FT_UID);
+        if (!is_object($structure)) {
+            return array();
+        }
+
+        return $this->collectAttachmentInfo($structure);
+    }
+
+    /**
+     * Walk the MIME structure without fetching body parts.
+     */
+    protected function collectAttachmentInfo($part, $part_number = '')
+    {
+        if (!is_object($part)) {
+            return array();
+        }
+
+        $info = $this->describeAttachmentPart($part, $part_number);
+        if ($info !== null) {
+            return array($info);
+        }
+
+        $attachments = array();
+        if (!empty($part->parts)) {
+            foreach ($part->parts as $number => $child) {
+                $child_number = $part_number === ''
+                    ? (string) ($number + 1) : $part_number . '.' . ($number + 1);
+                if (($part->type ?? null) == 2 && strtoupper($part->subtype ?? '') === 'RFC822') {
+                    $child_number = $part_number;
+                }
+                foreach ($this->collectAttachmentInfo($child, $child_number) as $attachment) {
+                    $attachments[] = $attachment;
+                }
             }
         }
 
-        return $email;
+        return $attachments;
+    }
+
+    /**
+     * Read Content-Type and Content-Disposition parameters.
+     */
+    protected function getPartParameters($part)
+    {
+        $params = array();
+        foreach (array('parameters', 'dparameters') as $property) {
+            if (empty($part->$property)) {
+                continue;
+            }
+            foreach ($part->$property as $param) {
+                if (isset($param->attribute, $param->value)) {
+                    $params[strtolower((string) $param->attribute)] = (string) $param->value;
+                }
+            }
+        }
+
+        return $params;
+    }
+
+    /**
+     * Decode filename/name parameters, including RFC 2231 continuations.
+     */
+    protected function decodeAttachmentName($params)
+    {
+        foreach (array('filename', 'name') as $attribute) {
+            $segments = array();
+            foreach ($params as $key => $value) {
+                if (preg_match('/^' . $attribute . '\\*(0|[1-9][0-9]*)(\\*)?$/D', $key, $match)) {
+                    $segments[(int) $match[1]] = array($value, !empty($match[2]));
+                }
+            }
+
+            if (isset($segments[0])) {
+                ksort($segments, SORT_NUMERIC);
+                $expected = 0;
+                $continuous = true;
+                foreach ($segments as $index => $segment) {
+                    if ($index !== $expected++) {
+                        $continuous = false;
+                        break;
+                    }
+                }
+                if ($continuous) {
+                    $name = $this->decodeAttachmentNameSegments($segments);
+                    if ($name !== null && $name !== '') {
+                        return $name;
+                    }
+                }
+            }
+
+            if (isset($params[$attribute . '*'])) {
+                $name = $this->decodeAttachmentNameSegments(array(array($params[$attribute . '*'], true)));
+                if ($name !== null && $name !== '') {
+                    return $name;
+                }
+            }
+
+            if (isset($params[$attribute]) && $params[$attribute] !== '') {
+                $name = $this->decodeMimeHeader($params[$attribute]);
+                if ($name !== '') {
+                    return $name;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Join decoded octets before converting the complete filename's charset.
+     */
+    protected function decodeAttachmentNameSegments($segments)
+    {
+        $charset = '';
+        $decoded = '';
+        $encoded = '';
+
+        foreach ($segments as $index => $segment) {
+            list($value, $is_encoded) = $segment;
+            if ($index === 0 && $is_encoded) {
+                if (!preg_match("/^([^']*)'[^']*'(.*)$/s", $value, $match)) {
+                    return null;
+                }
+                $charset = $match[1];
+                $value = $match[2];
+            }
+
+            if ($is_encoded) {
+                $encoded .= $value;
+            } else {
+                if (preg_match('/%(?![0-9a-f]{2})/i', $encoded)) {
+                    return null;
+                }
+                $decoded .= rawurldecode($encoded) . $value;
+                $encoded = '';
+            }
+        }
+
+        if (preg_match('/%(?![0-9a-f]{2})/i', $encoded)) {
+            return null;
+        }
+        $decoded .= rawurldecode($encoded);
+
+        return $charset !== ''
+            ? $this->convertEncoding($decoded, $charset)
+            : $this->decodeMimeHeader($decoded);
+    }
+
+    /**
+     * Use the same attachment classification and filenames for both APIs.
+     */
+    protected function describeAttachmentPart($part, $part_number, $params = null)
+    {
+        $params = $params ?? $this->getPartParameters($part);
+        $name = $this->decodeAttachmentName($params);
+        $disposition = strtolower((string) ($part->disposition ?? ''));
+        $type = (int) ($part->type ?? 0);
+        $subtype = strtolower((string) ($part->subtype ?? ''));
+        $content_id = isset($part->id) ? trim((string) $part->id, " <>") : null;
+        $has_content_id = $content_id !== null && $content_id !== '';
+        $is_text_body = $type === 0 && in_array($subtype, array('plain', 'html'), true);
+
+        if ($name === null && $disposition !== 'attachment'
+            && !($disposition === 'inline' && !$is_text_body)
+            && !($has_content_id && $type !== 0 && $type !== 1)) {
+            return null;
+        }
+
+        $types = array('text', 'multipart', 'message', 'application', 'audio', 'image', 'video', 'other');
+        $mime = isset($types[$type]) && $type !== 7 && $subtype !== ''
+            ? $types[$type] . '/' . $subtype : 'application/octet-stream';
+        $part_number = $part_number !== '' && $part_number !== false ? (string) $part_number : '1';
+        if ($name === null) {
+            $name = 'attachment-' . $part_number;
+            if ($mime === 'message/rfc822') {
+                $name .= '.eml';
+            } elseif (in_array($subtype, array('png', 'gif', 'jpeg', 'jpg', 'pdf', 'txt'), true)) {
+                $name .= '.' . $subtype;
+            }
+        }
+
+        return array(
+            'part' => $part_number,
+            'name' => $name,
+            'mime' => $mime,
+            'disposition' => $disposition === 'inline' || ($has_content_id && $disposition !== 'attachment')
+                ? 'inline' : 'attachment',
+            'content_id' => $content_id !== '' ? $content_id : null,
+            'bytes' => isset($part->bytes) ? (int) $part->bytes : null,
+        );
     }
 
     /**
@@ -1314,38 +1854,19 @@ class Reader
             return '';
         }
 
-        $params = array();
-        if (isset($part->parameters)) {
-            foreach ($part->parameters as $param) {
-                if (isset($param->attribute, $param->value)) {
-                    $params[strtolower($param->attribute)] = $param->value;
-                }
-            }
-        }
-
-        if (isset($part->dparameters)) {
-            foreach ($part->dparameters as $param) {
-                if (isset($param->attribute, $param->value)) {
-                    $params[strtolower($param->attribute)] = $param->value;
-                }
-            }
-        }
+        $params = $this->getPartParameters($part);
+        $attachment_info = $this->describeAttachmentPart($part, $part_number, $params);
 
         // is this part an attachment
         $attachment_id = false;
-        $is_attachment = false;
+        $is_attachment = $attachment_info !== null;
 
-        if (
-            isset($part->disposition)
-            && in_array(strtolower($part->disposition), array('attachment', 'inline'))
-            && ($part->subtype ?? '') != 'PLAIN'
-        ) {
-            $is_attachment = true;
-            $attachment_type = strtolower($part->disposition);
+        if ($is_attachment) {
+            $attachment_type = $attachment_info['disposition'];
 
             if ($attachment_type == 'inline') {
                 $is_inline_attachment = true;
-                $attachment_id = isset($part->id) ? trim($part->id, " <>") : false;
+                $attachment_id = $attachment_info['content_id'] ?? rand();
             } else {
                 $is_inline_attachment = false;
                 $attachment_id = rand();
@@ -1354,21 +1875,14 @@ class Reader
 
         // if there is an attachment
         if ($is_attachment) {
-            $file_name = false;
+            $file_name = $attachment_info['name'];
 
-            if (isset($params['filename'])) {
-                $file_name = $params['filename'];
-            } elseif (isset($params['name'])) {
-                $file_name = $params['name'];
-            }
-
-            if ($file_name) {
-                $file_name = $this->decodeMimeHeader($file_name);
-                $file_name = $attachment_id . '-' . $file_name;
-
+            if ($file_name !== '') {
                 $attachment = new EmailAttachment();
                 $attachment->setId($attachment_id);
-                $attachment->setName($file_name);
+                $attachment->setOriginalName($file_name);
+                $attachment->setName($attachment_id . '-' . $file_name);
+                $attachment->setMime($attachment_info['mime']);
 
                 if ($is_inline_attachment) {
                     $attachment->setType('inline');
@@ -1377,15 +1891,9 @@ class Reader
                 }
 
                 if ($this->save_attachments) {
-                    $attachment->setFilePath(
-                        $this->attachment_dir . DIRECTORY_SEPARATOR . $attachment->name()
-                    );
-
-                    if ($this->attachment_dir && $attachment->filePath()) {
-                        if (!file_exists($attachment->filePath())) {
-                            file_put_contents($attachment->filePath(), $data);
-                        }
-                    }
+                    $attachment->setAttachmentData($data);
+                    $attachment->save($this->attachment_dir, $attachment->name());
+                    $attachment->setAttachmentData(null);
                 } else {
                     $attachment->setAttachmentData($data);
                 }
@@ -1416,7 +1924,7 @@ class Reader
         }
 
         // rerun for additional parts
-        if (!empty($part->parts)) {
+        if (!$is_attachment && !empty($part->parts)) {
             foreach ($part->parts as $subpart_number => $subpart) {
                 if (($part->type ?? null) == 2 && ($part->subtype ?? '') == 'RFC822') {
                     $this->decodePart($email, $subpart, $part_number);
