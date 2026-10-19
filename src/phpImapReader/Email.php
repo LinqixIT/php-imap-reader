@@ -263,6 +263,16 @@ class Email
     }
 
     /**
+     * An alias for headers().
+     *
+     * @return array The custom headers of the email.
+     */
+    public function getHeaders()
+    {
+        return $this->headers();
+    }
+
+    /**
      * Get the size in bytes of this email.
      * 
      * @return integer
@@ -332,6 +342,52 @@ class Email
     public function html()
     {
         return $this->text_html ? $this->injectInline($this->text_html) : false;
+    }
+
+    /**
+     * Get HTML with available inline images embedded as base64 data URIs.
+     * Missing or empty image content leaves the original CID reference intact.
+     * This does not sanitize the HTML or inspect the declared image content.
+     *
+     * @return string|false False when the email has no HTML body.
+     * @throws \RuntimeException For invalid content or a failed or incomplete read.
+     */
+    public function htmlWithInlineImages()
+    {
+        if (!$this->text_html) {
+            return false;
+        }
+
+        $images = array();
+
+        foreach ($this->attachments as $attachment) {
+            $id = $attachment->id();
+            $mime = $attachment->mime();
+
+            // A bare image type with a URI-safe subtype cannot introduce
+            // parameters, fragments, quotes or controls into the data URI.
+            if ($attachment->isInline() && $id !== null && (string) $id !== ''
+                && is_string($mime)
+                && preg_match('~\Aimage/[a-z0-9][a-z0-9.+_-]{0,126}\z~i', $mime)) {
+                $images[(string) $id] = array($attachment, strtolower($mime));
+            }
+        }
+
+        $resolved = array();
+
+        return $this->replaceInlineReferences($this->text_html, function ($id) use ($images, &$resolved) {
+            if (!isset($images[$id])) {
+                return null;
+            }
+
+            if (!array_key_exists($id, $resolved)) {
+                $bytes = $this->inlineImageBytes($images[$id][0]);
+                $resolved[$id] = $bytes === null || $bytes === ''
+                    ? null : 'data:' . $images[$id][1] . ';base64,' . base64_encode($bytes);
+            }
+
+            return $resolved[$id];
+        });
     }
 
     /**
@@ -902,16 +958,76 @@ class Email
     }
 
     /**
-     * Returns, or saves, the .eml version of the email.
+     * Return the complete .eml message, optionally saving it to a new file.
+     * An existing regular file is left unchanged.
      *
      * @param mixed $filename
      *
      * @return string
+     * @throws \InvalidArgumentException For an invalid filename.
+     * @throws \RuntimeException When creating or writing the file fails.
      */
     public function eml($filename = null)
     {
-        if ($filename && !file_exists($filename)) {
-            file_put_contents($filename, $this->raw_body);
+        if ($filename === null || $filename === false) {
+            return $this->raw_body;
+        }
+
+        if (!is_string($filename) || $filename === '' || strpos($filename, "\0") !== false
+            || preg_match('~\A[a-z][a-z0-9+.-]*://~i', $filename)) {
+            throw new \InvalidArgumentException('The EML filename must be a local filesystem path.');
+        }
+
+        clearstatcache(true, $filename);
+
+        if (is_link($filename)) {
+            throw new \RuntimeException('The EML destination is a symbolic link.');
+        }
+
+        if (is_file($filename)) {
+            return $this->raw_body;
+        }
+
+        $output = @fopen($filename, 'xb');
+
+        if ($output === false) {
+            // Another writer may have created the file since the first check.
+            clearstatcache(true, $filename);
+            if (!is_link($filename) && is_file($filename)) {
+                return $this->raw_body;
+            }
+
+            throw new \RuntimeException('Unable to create the EML file.');
+        }
+
+        try {
+            $data = (string) ($this->raw_body ?? '');
+            $length = strlen($data);
+            $offset = 0;
+
+            while ($offset < $length) {
+                $written = @fwrite($output, substr($data, $offset, 8192));
+                if ($written === false || $written === 0) {
+                    throw new \RuntimeException('Unable to write the complete EML file.');
+                }
+                $offset += $written;
+            }
+
+            if (!@fflush($output)) {
+                throw new \RuntimeException('Unable to flush the EML file.');
+            }
+
+            $closed = @fclose($output);
+            $output = null;
+            if (!$closed) {
+                throw new \RuntimeException('Unable to close the EML file.');
+            }
+        } catch (\Throwable $error) {
+            if (is_resource($output)) {
+                @fclose($output);
+            }
+            @unlink($filename);
+            throw $error;
         }
 
         return $this->raw_body;
@@ -923,9 +1039,15 @@ class Email
      * @param string $filename
      *
      * @return string
+     * @throws \InvalidArgumentException For an invalid filename.
+     * @throws \RuntimeException When creating or writing the file fails.
      */
     public function saveEml($filename)
     {
+        if (!is_string($filename) || $filename === '') {
+            throw new \InvalidArgumentException('The EML filename must be a non-empty string.');
+        }
+
         return $this->eml($filename);
     }
 
@@ -1040,17 +1162,89 @@ class Email
      */
     public function injectInline($body)
     {
-        if ($this->attachments) {
-            foreach ($this->attachments as $attachment) {
-                if ($attachment->isInline()) {
-                    if ($attachment->id() && $attachment->filePath()) {
-                        $body = str_replace('cid:' . $attachment->id(), $attachment->filePath(), $body ?? '');
-                    }
-                }
+        $paths = array();
+
+        foreach ($this->attachments as $attachment) {
+            if ($attachment->isInline() && $attachment->id() !== null
+                && (string) $attachment->id() !== '' && $attachment->filePath()) {
+                $paths[(string) $attachment->id()] = $attachment->filePath();
             }
         }
 
-        return $body;
+        return $this->replaceInlineReferences($body, static function ($id) use ($paths) {
+            return $paths[$id] ?? null;
+        });
+    }
+
+    /**
+     * Resolve complete CID URL tokens once, preserving unknown references.
+     * Percent-encoded IDs are decoded once; a literal plus stays a plus.
+     *
+     * @param string $body
+     * @param callable $resolve Returns the replacement, or null to keep the CID.
+     * @return string
+     */
+    protected function replaceInlineReferences($body, callable $resolve)
+    {
+        if ($body === null || $body === '') {
+            return $body;
+        }
+
+        return preg_replace_callback(
+            '~(?<![a-z0-9+.-])cid:([^\x00-\x20\x7f"\'<>`()\\\\]+)~i',
+            static function ($matches) use ($resolve) {
+                $replacement = $resolve(rawurldecode($matches[1]));
+
+                return $replacement === null ? $matches[0] : $replacement;
+            },
+            $body
+        );
+    }
+
+    /**
+     * Read an inline image from memory or a readable saved file.
+     * An unavailable source returns null; a read that starts must complete.
+     *
+     * @return string|null
+     * @throws \RuntimeException For invalid content or a failed or incomplete read.
+     */
+    protected function inlineImageBytes(EmailAttachment $attachment)
+    {
+        $bytes = $attachment->content();
+
+        if ($bytes !== null) {
+            if (!is_string($bytes)) {
+                throw new \RuntimeException('Inline image content must be a string.');
+            }
+
+            return $bytes;
+        }
+
+        $path = $attachment->filePath();
+
+        if (!is_string($path) || $path === '' || strpos($path, "\0") !== false
+            || !is_file($path) || !is_readable($path)) {
+            return null;
+        }
+
+        $source = @fopen($path, 'rb');
+        if ($source === false) {
+            return null;
+        }
+
+        try {
+            $info = @fstat($source);
+            $bytes = @stream_get_contents($source);
+
+            if ($bytes === false || $info === false || !isset($info['size'])
+                || strlen($bytes) !== $info['size']) {
+                throw new \RuntimeException('Unable to read the complete inline image.');
+            }
+
+            return $bytes;
+        } finally {
+            @fclose($source);
+        }
     }
 }
 

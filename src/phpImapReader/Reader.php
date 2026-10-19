@@ -50,6 +50,20 @@ class Reader
     public $encoding;
 
     /**
+     * Explicit search charset override. Null omits the CHARSET parameter.
+     *
+     * @var string|null
+     */
+    protected $search_charset = null;
+
+    /**
+     * Follow the existing public output encoding until an override is set.
+     *
+     * @var boolean
+     */
+    protected $search_charset_set = false;
+
+    /**
      * Save attachment status - should we save attachments.
      * 
      * @var boolean
@@ -403,6 +417,28 @@ class Reader
     }
 
     /**
+     * Alias retained for the spelling used in the original documentation.
+     *
+     * @param string $mailbox
+     * @return boolean
+     */
+    public function doesMailboxExists($mailbox)
+    {
+        return $this->doesMailboxExist($mailbox);
+    }
+
+    /**
+     * Alias retained for the spelling used in the original documentation.
+     *
+     * @param string $folder
+     * @return boolean
+     */
+    public function doesFolderExists($folder)
+    {
+        return $this->doesFolderExist($folder);
+    }
+
+    /**
      * Returns an array of mailboxes.
      *
      * @return array
@@ -649,7 +685,7 @@ class Reader
      */
     public function from($from)
     {
-        $this->modes[] = 'FROM "' . $from . '"';
+        $this->modes[] = 'FROM ' . $this->formatSearchValue($from);
 
         return $this;
     }
@@ -664,8 +700,9 @@ class Reader
      */
     public function searchBody($string)
     {
-        if ($string) {
-            $this->modes[] = 'BODY "' . $string . '"';
+        $string = (string) ($string ?? '');
+        if ($string !== '') {
+            $this->modes[] = 'BODY ' . $this->formatSearchValue($string);
         }
 
         return $this;
@@ -681,8 +718,9 @@ class Reader
      */
     public function searchSubject($string)
     {
-        if ($string) {
-            $this->modes[] = 'SUBJECT "' . $string . '"';
+        $string = (string) ($string ?? '');
+        if ($string !== '') {
+            $this->modes[] = 'SUBJECT ' . $this->formatSearchValue($string);
         }
 
         return $this;
@@ -717,6 +755,7 @@ class Reader
      * Set one OR group of native IMAP search criteria.
      * Existing filters are applied to every alternative; another call replaces
      * the previous group. OR and HEADER operators are not supported by c-client.
+     * Escaped quotes and backslashes in quoted values are normalized before use.
      *
      * @param array $criteria Nonempty native IMAP2 search strings.
      *
@@ -781,6 +820,16 @@ class Reader
             }
             if (in_array($operator, $with_value, true) && isset($tokens[$index + 1])) {
                 $index++;
+                $value = $tokens[$index];
+                if ($value[0] === '"') {
+                    $value = substr($value, 1, -1);
+                    $value = preg_replace_callback('/\\\\(["\\\\])/', static function ($match) {
+                        return $match[1];
+                    }, $value);
+                    $tokens[$index] = $this->formatSearchValue($value);
+                } elseif ($value[0] === '{' || strpos($value, '\\') !== false) {
+                    $tokens[$index] = $this->formatSearchValue($value);
+                }
                 continue;
             }
 
@@ -789,7 +838,68 @@ class Reader
             );
         }
 
-        return $criterion;
+        return implode(' ', $tokens);
+    }
+
+    /**
+     * Encode a search value for c-client's IMAP2 criteria parser.
+     * Its quoted strings do not process backslash escapes, so values containing
+     * quotes or backslashes use a byte-counted literal instead.
+     *
+     * @param string $value
+     * @return string
+     */
+    protected function formatSearchValue($value)
+    {
+        $value = (string) ($value ?? '');
+        if (strpbrk($value, "\r\n\0") !== false) {
+            throw new \InvalidArgumentException('A search value must not contain CR, LF or NUL characters.');
+        }
+
+        if (strpbrk($value, "\"\\") !== false) {
+            return '{' . strlen($value) . "}\r\n" . $value;
+        }
+
+        return '"' . $value . '"';
+    }
+
+    /**
+     * Select the charset sent with searches without changing output encoding.
+     * Null omits CHARSET. The server determines which named charsets it accepts.
+     *
+     * @param string|null $charset
+     * @return Reader
+     */
+    public function searchCharset($charset)
+    {
+        if ($charset !== null
+            && (!is_string($charset)
+                || preg_match('/\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/', $charset) !== 1)) {
+            throw new \InvalidArgumentException('A search charset must be a charset name or null.');
+        }
+
+        $this->search_charset = $charset;
+        $this->search_charset_set = true;
+
+        return $this;
+    }
+
+    /**
+     * Run a native search with the configured charset, or omit it entirely.
+     *
+     * @param \IMAP\Connection|resource $stream
+     * @param string $criteria
+     * @param int $flags
+     * @return array|false
+     */
+    protected function searchNative($stream, $criteria, $flags)
+    {
+        $charset = $this->search_charset_set ? $this->search_charset : $this->encoding;
+        if ($charset === null) {
+            return imap_search($stream, $criteria, $flags);
+        }
+
+        return imap_search($stream, $criteria, $flags, $charset);
     }
 
     /**
@@ -891,7 +1001,7 @@ class Reader
      */
     public function keyword($keyword)
     {
-        $this->modes[] = 'KEYWORD "' . $keyword . '"';
+        $this->modes[] = 'KEYWORD ' . $this->formatSearchValue($keyword);
 
         return $this;
     }
@@ -906,7 +1016,7 @@ class Reader
      */
     public function unkeyword($keyword)
     {
-        $this->modes[] = 'UNKEYWORD "' . $keyword . '"';
+        $this->modes[] = 'UNKEYWORD ' . $this->formatSearchValue($keyword);
 
         return $this;
     }
@@ -955,7 +1065,7 @@ class Reader
      */
     public function sentTo($to)
     {
-        $this->modes[] = 'TO "' . $to . '"';
+        $this->modes[] = 'TO ' . $this->formatSearchValue($to);
 
         return $this;
     }
@@ -970,7 +1080,7 @@ class Reader
      */
     public function searchBCC($to)
     {
-        $this->modes[] = 'BCC "' . $to . '"';
+        $this->modes[] = 'BCC ' . $this->formatSearchValue($to);
 
         return $this;
     }
@@ -985,7 +1095,7 @@ class Reader
      */
     public function searchCC($to)
     {
-        $this->modes[] = 'CC "' . $to . '"';
+        $this->modes[] = 'CC ' . $this->formatSearchValue($to);
 
         return $this;
     }
@@ -1034,7 +1144,7 @@ class Reader
      */
     public function searchText($string)
     {
-        $this->modes[] = 'TEXT "' . $string . '"';
+        $this->modes[] = 'TEXT ' . $this->formatSearchValue($string);
 
         return $this;
     }
@@ -1166,8 +1276,9 @@ class Reader
         foreach ($alternatives as $alternative) {
             // c-client does not accept an OR search operator. Search each
             // branch separately, then merge UIDs before filtering or paging.
-            $criteria = trim($common . ' ' . $alternative);
-            $matches = imap_search($stream, $criteria, SE_UID, $this->encoding);
+            // Do not trim: the last bytes can belong to a search literal.
+            $criteria = $common . ($alternative !== '' ? ' ' . $alternative : '');
+            $matches = $this->searchNative($stream, $criteria, SE_UID);
 
             foreach ($matches ?: array() as $uid) {
                 $uid = (int) $uid;
@@ -1368,11 +1479,10 @@ class Reader
 
         $this->emails = array();
 
-        $this->email_index = imap_search(
+        $this->email_index = $this->searchNative(
             $this->stream(),
             $this->modes(),
-            0,
-            $this->encoding
+            0
         );
 
         if (!$this->limit) {

@@ -1,84 +1,83 @@
-# PHP IMAP Reader – PHP 8.1–8.5
+# php-imap-reader
 
-A PHP library for reading and managing IMAP mailboxes. This version uses a
-single codebase for **PHP 8.1 through 8.5**.
+A maintained continuation of [`benhall14/php-imap-reader`](https://github.com/benhall14/php-imap-reader) for PHP 8.1–8.5.
 
-## Project and credits
+This fork keeps the original lightweight API while updating the library for modern PHP IMAP behavior, improving message and attachment handling, and adding commonly requested features.
 
-**Organization:** [LinqixIT](https://github.com/LinqixIT)  
-**Development and maintenance:** [pascal-lpholding](https://github.com/pascal-lpholding)  
-**Repository:** [LinqixIT/php-imap-reader](https://github.com/LinqixIT/php-imap-reader)
+Maintained by [pascal-lpholding](https://github.com/pascal-lpholding) under [LinqixIT](https://github.com/LinqixIT).
 
-This independently maintained fork is based on
-[php-imap-reader by Benjamin Hall (benhall14)](https://github.com/benhall14/php-imap-reader).
-Changes and new features are documented in [CHANGELOG.md](CHANGELOG.md).
-The original copyright notices and MIT license are retained.
+---
 
-The Composer package is `linqixit/php-imap-reader`. Its PHP namespace is
-`linqixit\phpImapReader`. Compatibility aliases also support the original
-`benhall14\phpImapReader` class names.
+## Why this fork exists
 
-## Features
+The original `benhall14/php-imap-reader` project provided a small and convenient wrapper around PHP's native IMAP extension.
 
-- Fluent mailbox searches, including OR groups and custom header filters.
-- UID lists, message overviews and attachment metadata without downloading bodies.
-- Message-by-message processing with a generator.
-- Message IDs, reply references and access to repeated headers.
-- International attachment filenames and explicit saving with collision handling.
+Since then, PHP and the IMAP extension have changed significantly.
+
+Starting with PHP 8.1, IMAP connections are represented by `IMAP\Connection` objects instead of the resource-based behavior older code commonly relied on.
+
+Starting with PHP 8.4, the IMAP extension is **deprecated and unbundled from PHP**. It is still available, but it must be installed separately.
+
+This fork exists to keep the familiar API usable on current PHP versions while fixing compatibility issues and extending the library without turning it into a large framework.
+
+The main goals are:
+
+- Support PHP 8.1 through PHP 8.5.
+- Preserve the original API wherever practical.
+- Keep existing `benhall14\phpImapReader` imports working.
+- Use `linqixit\phpImapReader` as the canonical namespace.
+- Support modern `IMAP\Connection` objects.
+- Improve message, MIME, encoding and attachment handling.
+- Add useful search and mailbox helpers.
+- Provide practical examples for common operations.
+- Keep the library small and easy to understand.
+
+More information about PHP's IMAP extension:
+
+https://www.php.net/manual/en/book.imap.php
+
+---
 
 ## Requirements
 
-- PHP `^8.1` and Composer.
-- **ext-imap**, compatible with your PHP version.
-- **ext-iconv** for character encoding conversion.
-- **ext-mbstring** is optional and used when available.
+- PHP `^8.1`
+- `ext-imap`
+- `ext-iconv`
+- `ext-mbstring` is optional
 
-Starting with PHP 8.4, IMAP must be installed separately, for example through
-your hosting provider or a compatible PECL package. The extension must be
-available both to your application and to the PHP runtime used by Composer.
+> On PHP 8.4 and newer, the IMAP extension is no longer bundled with PHP and must be installed separately.
 
-Official guidance: [Installing PHP IMAP](https://www.php.net/manual/en/imap.installation.php)
-and [PECL IMAP](https://pecl.php.net/package/imap).
+---
 
 ## Installation
 
-Extract the ZIP archive and run the following command in the directory
-containing `composer.json`:
+Install with Composer:
 
-```sh
+```bash
+composer require linqixit/php-imap-reader
+```
+
+Or add it manually to your `composer.json`:
+
+```json
+{
+    "require": {
+        "linqixit/php-imap-reader": "^1.0"
+    }
+}
+```
+
+Then run:
+
+```bash
 composer install
 ```
 
-Then include `vendor/autoload.php` in your application.
+---
 
-To use this library as a Composer dependency, use the package name
-`linqixit/php-imap-reader`. Installation through Packagist requires the package
-to be registered there. Alternatively, configure the GitHub repository as a
-Composer VCS repository, or the extracted directory as a path repository.
-Your application's Composer installation manages its own lock file.
+## Namespace
 
-## Migrating from the original library
-
-Change your Composer dependency from `benhall14/php-imap-reader` to
-`linqixit/php-imap-reader`. Update your application's Composer lock file and
-regenerate its autoloader as part of that switch.
-
-**Existing imports can stay as they are.** After loading `vendor/autoload.php`,
-the original class names automatically refer to their LinqixIT equivalents:
-
-| Original class name | Canonical class name |
-| --- | --- |
-| `benhall14\phpImapReader\Reader` | `linqixit\phpImapReader\Reader` |
-| `benhall14\phpImapReader\Email` | `linqixit\phpImapReader\Email` |
-| `benhall14\phpImapReader\EmailAttachment` | `linqixit\phpImapReader\EmailAttachment` |
-
-For example, this existing import remains supported:
-
-```php
-use benhall14\phpImapReader\Reader;
-```
-
-New code can use the LinqixIT namespace directly:
+The canonical namespace is:
 
 ```php
 use linqixit\phpImapReader\Reader;
@@ -86,20 +85,21 @@ use linqixit\phpImapReader\Email;
 use linqixit\phpImapReader\EmailAttachment;
 ```
 
-The aliases also support fully qualified class references and type declarations
-using the original names. PHP reports the canonical `linqixit` class names in
-`get_class()`, reflection and newly serialized objects, so code that compares
-or stores those names as exact strings may need adjustment.
+For backwards compatibility, the original namespace is also supported:
 
-Install only one of the two packages. The compatibility aliases occupy the
-original class names, so the fork declares a Composer conflict with
-`benhall14/php-imap-reader`.
+```php
+use benhall14\phpImapReader\Reader;
+use benhall14\phpImapReader\Email;
+use benhall14\phpImapReader\EmailAttachment;
+```
 
-Public method names, parameter order and the interfaces for reading message
-data are preserved. The bug fixes and changes to error handling are listed in
-[CHANGELOG.md](CHANGELOG.md).
+Both namespace styles refer to the same classes.
 
-## Quick start
+This makes it possible to migrate existing projects without immediately changing all imports.
+
+---
+
+## Basic usage
 
 ```php
 <?php
@@ -109,248 +109,464 @@ require __DIR__ . '/vendor/autoload.php';
 use linqixit\phpImapReader\Reader;
 
 $reader = new Reader(
-    '{mail.example.com:993/imap/ssl}',
-    'name@example.com',
-    'password',
-    false,      // Keep attachments in memory
-    false,      // Do not automatically mark messages as read
-    'UTF-8'
+    '{imap.example.com:993/imap/ssl}INBOX',
+    'user@example.com',
+    'password'
 );
 
-$reader->folder('INBOX')->unread()->limit(10)->get();
+$emails = $reader->get();
 
-foreach ($reader->emails() as $email) {
-    echo $email->fromEmail() . PHP_EOL;
+foreach ($emails as $email) {
     echo $email->subject() . PHP_EOL;
-    echo $email->date('Y-m-d H:i:s') . PHP_EOL;
-    echo $email->plain() . PHP_EOL;
 }
-
-$reader->close();
 ```
 
-The server address and credentials in this example are placeholders.
+---
 
-## Constructor
-
-```php
-new Reader($hostname, $username, $password, $attachmentDir = false, $markAsRead = true, $encoding = 'UTF-8');
-```
-
-An attachment directory must already exist and be writable. Set the fourth
-parameter to `false` to keep attachments in memory. The fifth parameter
-controls whether messages are automatically marked as read; it defaults to
-`true`.
-
-## Selecting messages
-
-Filters can be chained. `get()` fetches messages and returns an array of `Email`
-objects. The same results are available through `emails()`; `email()` returns
-the first message or `null`.
-
-| Purpose | Methods |
-| --- | --- |
-| Folder | `folder($name)`, `mailbox($name)` |
-| Selection | `all()`, `unread()` / `unseen()`, `read()` / `seen()`, `recent()`, `flagged()`, `unflagged()`, `unanswered()`, `deleted()`, `newMessages()`, `oldMessages()` |
-| Addresses | `from($address)`, `sentTo($address)`, `searchCC($text)`, `searchBCC($text)` |
-| Content | `searchSubject($text)`, `searchBody($text)`, `searchText($text)` |
-| Keywords | `keyword($keyword)`, `unkeyword($keyword)` |
-| Date | `beforeDate($date)`, `sinceDate($date)`, `onDate($date)` |
-| Pagination and order | `limit($number)`, `page($number)`, `orderASC()`, `orderDESC()` |
-| Single message by UID | `id($uid)->get()`, `getEmailByUID($uid)` |
-| Single message by sequence number | `getEmailByMessageSequence($number)` |
-
-Date filters accept values that `strtotime()` can parse, such as `2026-10-19`.
-Invalid values cause an `InvalidArgumentException`.
-
-### OR searches and custom headers
-
-Use `anyOf()` when either condition should match:
+## Reading messages
 
 ```php
 $emails = $reader
     ->clearFilters()
-    ->anyOf(['UNSEEN', 'FLAGGED'])
     ->limit(20)
     ->page(1)
     ->get();
+
+foreach ($emails as $email) {
+    echo 'Subject: ' . $email->subject() . PHP_EOL;
+    echo 'From: ' . $email->from() . PHP_EOL;
+    echo 'Date: ' . $email->date() . PHP_EOL;
+}
 ```
 
-Each condition in `anyOf()` is a native IMAP2 search string, for example
-`UNSEEN` or `FROM "support@example.com" UNANSWERED`. Existing chained filters
-still apply to every branch. Results are combined without duplicates before
-sorting and pagination. Calling `anyOf()` again replaces the previous OR group.
-Unsupported operators or malformed alternatives cause an
-`InvalidArgumentException`; use `searchHeader()` for header conditions.
+---
 
-Filter by a header such as `References`, `Message-ID` or an application-specific
-field:
+## Search by subject
 
 ```php
 $emails = $reader
     ->clearFilters()
-    ->from('support@example.com')
-    ->searchHeader('References', '<original@example.com>')
+    ->searchSubject('Invoice')
     ->get();
 ```
 
-Header names are case-insensitive. Header values use a case-insensitive
-substring match; an empty search value checks whether the header exists.
-Several header filters must all match. Folded and repeated headers are
-supported.
-
-Header filtering reads the headers of candidate messages first and downloads
-full messages only for matches. Apply sender, date or status filters first
-when searching a large mailbox.
-
-`clearFilters()` starts a new query while keeping the connection and pagination
-settings. `id($uid)` selects a specific message and takes precedence over query
-filters and pagination.
-
-### UID lists and message overviews
-
-| Method | Result |
-| --- | --- |
-| `searchUIDs()` | Matching UIDs in the selected order and page |
-| `searchUIDs(false)` | All matching UIDs, without pagination |
-| `countMatching()` | Number of matches before pagination |
-| `getOverview()` | Message summaries for the selected order and page |
-
-These methods leave the loaded `emails()` collection available. Overviews
-include native IMAP fields such as `uid`, `msgno`, `subject`, `from`, `to`,
-`date`, `size`, `seen`, `flagged` and `answered`; some fields may be absent.
-Subject and address display text are decoded. These calls do not download
-message bodies or attachment contents, and do not mark messages as read.
+Search values containing quotation marks and backslashes are handled as literal search text.
 
 ```php
-foreach ($reader->clearFilters()->unseen()->limit(20)->page(1)->getOverview() as $message) {
-    echo $message->uid . ': ' . ($message->subject ?? '') . PHP_EOL;
+$emails = $reader
+    ->clearFilters()
+    ->searchSubject('Invoice "April"')
+    ->get();
+```
+
+---
+
+## Search by body
+
+```php
+$emails = $reader
+    ->clearFilters()
+    ->searchBody('payment received')
+    ->get();
+```
+
+---
+
+## Search custom headers
+
+Use `searchHeader()` to search fields such as `Message-ID`, `References`, custom application headers or other message headers.
+
+```php
+$emails = $reader
+    ->clearFilters()
+    ->searchHeader('X-Customer-ID', '12345')
+    ->get();
+```
+
+Header names are matched case-insensitively.
+
+Folded and repeated header fields are supported.
+
+---
+
+## OR searches
+
+Use `anyOf()` when multiple IMAP search conditions should be combined using OR logic.
+
+```php
+$emails = $reader
+    ->clearFilters()
+    ->anyOf([
+        'UNSEEN',
+        'FLAGGED',
+    ])
+    ->get();
+```
+
+Duplicate UIDs are removed automatically.
+
+---
+
+## Search charset
+
+The IMAP search charset can be configured independently from the message output encoding.
+
+```php
+$reader->searchCharset('UTF-8');
+```
+
+Some servers may require another charset:
+
+```php
+$reader->searchCharset('US-ASCII');
+```
+
+To omit the charset argument entirely:
+
+```php
+$reader->searchCharset(null);
+```
+
+---
+
+## Work with UIDs only
+
+For large mailboxes, you can retrieve only matching UIDs first:
+
+```php
+$uids = $reader
+    ->clearFilters()
+    ->searchSubject('Invoice')
+    ->searchUIDs();
+
+foreach ($uids as $uid) {
+    echo $uid . PHP_EOL;
 }
 ```
 
-### Processing a large mailbox
+---
+
+## Count matching messages
 
 ```php
-foreach ($reader->clearFilters()->unseen()->limit(0)->page(1)->iterate() as $uid => $email) {
-    echo $uid . ': ' . $email->subject() . PHP_EOL;
-    // Process this message here.
+$count = $reader
+    ->clearFilters()
+    ->searchSubject('Invoice')
+    ->countMatching();
+
+echo $count;
+```
+
+---
+
+## Message overview
+
+Use `getOverview()` when you only need lightweight message metadata instead of full message bodies and attachments.
+
+```php
+$messages = $reader
+    ->clearFilters()
+    ->limit(50)
+    ->getOverview();
+
+foreach ($messages as $message) {
+    print_r($message);
 }
 ```
 
-`iterate()` yields one `Email` at a time, keyed by UID, and does not build an
-`emails()` result collection. It uses the configured filters, order, pagination
-and automatic read marking. The UID list is captured before processing, so
-marking or moving a processed message does not shift the remaining selection.
-The UID list and the current message still require memory; a single message
-can contain large attachments. Keep the same account and mailbox throughout
-the iteration.
+---
 
-## Message fields and attachments
+## Iterate through large mailboxes
 
-| Data | Methods on an `Email` object |
-| --- | --- |
-| Identification | `id()` (UID), `msgno()`, `size()` |
-| Content | `subject()`, `date($format)`, `plain()`, `html()` |
-| Addresses | `fromName()`, `fromEmail()`, `to()`, `cc()`, `replyTo()`, `isTo($address)` |
-| Headers | `headers()`, `getHeader($name)`, `getHeaderValues($name)` |
-| Reply references | `messageId()`, `inReplyTo()`, `references()` |
-| Status | `isRecent()`, `isUnseen()`, `isFlagged()`, `isAnswered()`, `isDeleted()`, `isDraft()` |
-| Attachments | `hasAttachments()`, `attachments()`, `attachment($id)` |
-| Raw message | `eml()`, `saveEml($filename)` |
-
-`getHeader()` looks up names without regard to case and returns the latest
-value or `null`. `getHeaderValues()` returns every value of a repeated field
-in arrival order. Folded values and colons inside values are preserved.
-
-`messageId()` and `inReplyTo()` return the first message ID, including angle
-brackets, or `null`. `references()` returns an ordered list of unique message
-IDs. These header IDs identify messages across mailboxes; `id()` remains the
-mailbox UID.
+Use `iterate()` when messages should be processed one at a time.
 
 ```php
-echo $email->messageId() ?? '';
-echo $email->inReplyTo() ?? '';
-
-foreach ($email->references() as $messageId) {
-    echo $messageId . PHP_EOL;
+foreach ($reader->clearFilters()->iterate() as $email) {
+    echo $email->subject() . PHP_EOL;
 }
 ```
+
+This is useful when processing larger mailboxes without keeping every `Email` object in memory at once.
+
+---
+
+## Message IDs and reply tracking
+
+The library exposes common threading headers:
+
+```php
+$messageId = $email->messageId();
+$inReplyTo = $email->inReplyTo();
+$references = $email->references();
+```
+
+You can also access repeated headers:
+
+```php
+$values = $email->getHeaderValues('References');
+```
+
+This can be used to associate replies with earlier messages.
+
+---
+
+## Headers
+
+Retrieve all parsed headers:
+
+```php
+$headers = $email->getHeaders();
+
+print_r($headers);
+```
+
+Header parsing preserves:
+
+- repeated fields
+- folded values
+- embedded colons
+- case-insensitive lookup
+
+---
+
+## Attachments
 
 ```php
 foreach ($email->attachments() as $attachment) {
-    echo $attachment->name() . PHP_EOL;
-
-    // For attachments kept in memory:
-    $content = $attachment->content();
-
-    // When an attachment directory is configured:
-    $path = $attachment->filePath();
+    echo $attachment->originalName() . PHP_EOL;
+    echo $attachment->mime() . PHP_EOL;
+    echo $attachment->extension() . PHP_EOL;
+    echo $attachment->size() . PHP_EOL;
 }
 ```
 
-### Attachment names, metadata and saving
+Supported attachment improvements include:
 
-| Method on `EmailAttachment` | Result |
-| --- | --- |
-| `originalName()` | Decoded sender filename, or a generated name if absent |
-| `name()` | Existing attachment name, including its ID prefix |
-| `mime()` | Declared MIME type |
-| `extension()` | Lowercase filename extension |
-| `size()` | Decoded content size or saved file size, in bytes |
-| `save($directory, $filename = null, $overwrite = false)` | Absolute path of the saved file |
+- RFC 2231 filenames
+- numbered filename continuations
+- international filenames
+- named text attachments
+- inline images with `Content-ID`
+- attached messages
+- safe filename handling
 
-RFC 2231 extended filenames and numbered filename continuations are supported,
-including non-ASCII names. `save()` uses the original filename by default and
-removes path components. If that filename already exists, a suffix such as
-` (1)` is added. Set `$overwrite` to `true` only when replacing an existing file
-is intended. The destination directory must already exist and be writable.
-The returned path and `filePath()` identify the actual saved file, including
-any filename changes. `name()` and `content()` are retained. Automatic saving
-through the constructor's attachment directory also handles filename collisions.
-Names that exceed common filesystem limits are shortened for saving;
-`originalName()` retains the full display name. Invalid filenames or directories
-cause an `InvalidArgumentException`. Unreadable attachment content or failed
-writes cause a `RuntimeException`; `size()` also throws if no readable content
-is available.
+---
+
+## Inspect attachment metadata first
+
+Use `getAttachmentInfo()` when you want attachment information before loading the complete attachment content.
+
+```php
+$info = $reader->getAttachmentInfo($uid);
+
+print_r($info);
+```
+
+---
+
+## Save attachments
 
 ```php
 foreach ($email->attachments() as $attachment) {
-    $path = $attachment->save(__DIR__ . '/downloads');
-    echo $attachment->originalName() . ' -> ' . $path . PHP_EOL;
+    $attachment->save(__DIR__ . '/downloads');
 }
 ```
 
-To inspect attachments before downloading a message, use
-`$reader->getAttachmentInfo($uid)`. Each entry contains `part`, `name`, `mime`,
-`disposition`, `content_id` and `bytes`. This reads the MIME structure without
-fetching attachment contents. `bytes` is the size reported for the encoded
-MIME part and can differ from the decoded file size, or be `null` if unavailable.
-Attachments without a sender filename receive a name based on their MIME part.
+If a file with the same name already exists, a suffix is added automatically unless overwrite behavior is explicitly requested.
 
-## Managing mailboxes and connections
+For example:
 
-- `listMailboxes()` / `listFolders()` return the list of folders.
-- `doesMailboxExist($name)` / `doesFolderExist($name)` check whether a folder exists.
-- `createMailbox($name)` / `createFolder($name)` create a folder.
-- `count()` returns the number of messages in the connected mailbox.
-- `markAsRead($uid)`, `deleteEmail($uid)` and `moveEmailToFolder($uid, $folder)`
-  operate on a message's UID.
-- `expunge()` permanently removes messages marked for deletion.
-- `stream(true)` reconnects. `close()` closes the connection.
-- `reset()` closes the connection and clears the results; existing filters and
-  settings are retained.
+```text
+invoice.pdf
+invoice (1).pdf
+invoice (2).pdf
+```
 
-As in the original library, `close()`, `reset()` and the destructor expunge
-messages when closing the connection. A forced reconnect or folder change does
-not trigger an additional expunge itself.
+---
 
-## Changes and license
+## Inline images
 
-See [CHANGELOG.md](CHANGELOG.md) for the changes in this version.
+HTML messages containing `cid:` image references can be rendered with inline images embedded as data URLs:
 
-Licensed under the MIT license; see [LICENSE](LICENSE).
+```php
+$html = $email->htmlWithInlineImages();
 
-- Original author: [Benjamin Hall / benhall14](https://github.com/benhall14/php-imap-reader).
-- Development and maintenance: [pascal-lpholding](https://github.com/pascal-lpholding) under [LinqixIT](https://github.com/LinqixIT).
-- The original copyright notices are retained. Copyright for modifications is
-  additionally attributed to pascal-lpholding.
+echo $html;
+```
+
+Complete Content-IDs are matched, including URL-encoded references.
+
+---
+
+## Save a message as EML
+
+```php
+$email->saveEml(__DIR__ . '/message.eml');
+```
+
+Failed file creation or write operations are reported instead of being silently ignored.
+
+Existing regular files are not overwritten automatically.
+
+---
+
+## Mailboxes and folders
+
+Check whether a mailbox exists:
+
+```php
+if ($reader->doesMailboxExists('INBOX')) {
+    echo 'Mailbox exists';
+}
+```
+
+The alternative spelling used by some older examples is also supported:
+
+```php
+if ($reader->doesFolderExists('INBOX')) {
+    echo 'Folder exists';
+}
+```
+
+---
+
+## Mark messages as read
+
+```php
+$reader->read($uid);
+```
+
+`read()` returns the reader instance, so chaining remains possible:
+
+```php
+$reader
+    ->read($uid)
+    ->clearFilters();
+```
+
+---
+
+## Reusing the connection
+
+The reader supports modern `IMAP\Connection` objects and reuses active connections where possible.
+
+Reconnects and folder changes are handled without unnecessary extra expunge operations.
+
+---
+
+## Examples
+
+The repository includes practical example scripts under:
+
+```text
+tests/<category>/<function>.php
+```
+
+Examples include:
+
+```text
+tests/connection/connect.php
+tests/connection/reconnect.php
+
+tests/search/searchSubject.php
+tests/search/searchBody.php
+tests/search/searchHeader.php
+tests/search/anyOf.php
+tests/search/searchCharset.php
+tests/search/searchUIDs.php
+
+tests/messages/get.php
+tests/messages/getOverview.php
+tests/messages/countMatching.php
+tests/messages/iterate.php
+tests/messages/getEmailByUID.php
+tests/messages/markAsRead.php
+
+tests/email/getHeaders.php
+tests/email/messageId.php
+tests/email/inReplyTo.php
+tests/email/references.php
+tests/email/htmlWithInlineImages.php
+tests/email/saveEml.php
+
+tests/attachments/getAttachmentInfo.php
+tests/attachments/save.php
+
+tests/mailbox/doesMailboxExists.php
+tests/mailbox/doesFolderExists.php
+```
+
+Most examples can use environment variables for connection details:
+
+```bash
+export IMAP_HOST='{mail.example.com:993/imap/ssl}INBOX'
+export IMAP_USER='user@example.com'
+export IMAP_PASS='secret'
+```
+
+Then run an example:
+
+```bash
+php tests/search/searchHeader.php
+```
+
+---
+
+## Backwards compatibility
+
+Existing applications using the original namespace can continue to use imports such as:
+
+```php
+use benhall14\phpImapReader\Reader;
+```
+
+The compatibility layer maps the original class names to the LinqixIT classes.
+
+The original package and this fork should not be installed together because both expose the legacy class names.
+
+---
+
+## PHP support
+
+This fork targets:
+
+```text
+PHP 8.1
+PHP 8.2
+PHP 8.3
+PHP 8.4
+PHP 8.5
+```
+
+The project intentionally keeps its PHP requirements compatible with PHP 8.1 instead of using syntax that would require a newer PHP version.
+
+---
+
+## Original project
+
+This project is based on:
+
+[`benhall14/php-imap-reader`](https://github.com/benhall14/php-imap-reader)
+
+Original author:
+
+**Benjamin Hall / benhall14**
+
+This fork is maintained by:
+
+**LinqixIT / pascal-lpholding**
+
+The original attribution is retained.
+
+---
+
+## License
+
+This project is licensed under the MIT License.
+
+The original copyright and license notice from `benhall14/php-imap-reader`
+are retained in accordance with the MIT License.
+
+Additional changes and continued maintenance are provided by LinqixIT.
+
+See [`LICENSE`](LICENSE) for details.
